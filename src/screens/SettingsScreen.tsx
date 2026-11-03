@@ -31,14 +31,19 @@ export function SettingsScreen({ settings, onChange, onBack, toast }: Props) {
   const check = async (which: 'el' | 'an') => {
     setChecking(which);
     const r = which === 'el' ? await validateElevenLabsKey(s.elevenLabsKey.trim()) : await validateAnthropicKey(s.anthropicKey.trim());
-    setResult((p) => ({ ...p, [which]: `${r.ok ? '✅' : '❌'} ${r.message}` }));
+    setResult((p) => ({ ...p, [which]: `${r.ok ? '✅' : '❌'} ${r.message}${r.ok ? ' (נשמר)' : ''}` }));
+    if (r.ok) {
+      const clean = { ...s, elevenLabsKey: s.elevenLabsKey.trim(), anthropicKey: s.anthropicKey.trim() };
+      await saveSettings(clean);
+      onChange(clean);
+    }
     setChecking(null);
   };
 
   return (
     <div className="screen">
       <header className="topbar">
-        <button className="icon-btn" aria-label="חזרה" onClick={onBack}>
+        <button className="icon-btn" aria-label="חזרה" onClick={save}>
           <Back />
         </button>
         <h1>הגדרות</h1>

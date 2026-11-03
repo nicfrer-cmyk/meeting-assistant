@@ -88,7 +88,9 @@ function describeElevenLabsError(status: number, body: string): string {
   } catch {
     detail = body.slice(0, 200);
   }
-  if (status === 401) return 'מפתח ElevenLabs לא תקין או פג תוקף.';
+  if (status === 401 && /missing_permissions|speech_to_text|permission/i.test(body))
+    return 'למפתח ElevenLabs אין הרשאת Speech to Text. ערוך את המפתח ב-ElevenLabs, סמן Speech to Text: Access, ולחץ "נסה שוב".';
+  if (status === 401) return `מפתח ElevenLabs נדחה (${detail || 'invalid_api_key'}). ודא שהמפתח נשמר בהגדרות ושהועתק במלואו.`;
   if (status === 402 || /quota|credits|exceeded/i.test(detail)) return 'נגמרו הקרדיטים בחשבון ElevenLabs.';
   if (status === 413) return 'קובץ ההקלטה גדול מדי עבור ElevenLabs.';
   return `שגיאת תמלול (${status}): ${detail || 'ללא פירוט'}`;
@@ -141,29 +143,25 @@ export function speakerLabel(id: string, names?: Record<string, string>): string
 
 export async function validateElevenLabsKey(apiKey: string): Promise<{ ok: boolean; message: string }> {
   try {
-    const res = await fetch('https://api.elevenlabs.io/v1/user/subscription', {
+    // Probe the speech-to-text endpoint itself with an empty request:
+    // a permitted key gets a validation error (400/422), a missing permission gets 401.
+    const form = new FormData();
+    form.append('model_id', 'scribe_v1');
+    const res = await fetch('https://api.elevenlabs.io/v1/speech-to-text', {
+      method: 'POST',
       headers: { 'xi-api-key': apiKey },
+      body: form,
     });
-    if (res.ok) {
-      const j = await res.json();
-      const left = Math.max(0, (j.character_limit ?? 0) - (j.character_count ?? 0));
-      return { ok: true, message: `המפתח תקין. תוכנית: ${j.tier ?? '?'}, יתרה: ${left.toLocaleString('he-IL')} קרדיטים` };
+    const body = await res.text();
+    if (res.status === 401) {
+      if (/missing_permissions|permission/i.test(body))
+        return { ok: false, message: 'המפתח תקין אבל אין לו הרשאת Speech to Text. ערוך אותו ב-ElevenLabs וסמן Speech to Text: Access.' };
+      return { ok: false, message: 'המפתח לא תקין. ודא שהעתקת את כולו (מתחיל ב-sk_).' };
     }
-    let status = '';
-    try {
-      const j = await res.json();
-      status = j?.detail?.status || '';
-    } catch {
-      /* ignore */
+    if (res.status === 400 || res.status === 422 || res.ok) {
+      return { ok: true, message: 'המפתח תקין ויש לו הרשאת תמלול' };
     }
-    if (res.status === 401 && status === 'missing_permissions') {
-      // Restricted key: it may still be allowed to transcribe. Check the models endpoint instead.
-      const m = await fetch('https://api.elevenlabs.io/v1/models', { headers: { 'xi-api-key': apiKey } });
-      if (m.ok) return { ok: true, message: 'המפתח תקין (מוגבל בהרשאות). ודא שמסומנת בו ההרשאה Speech to Text.' };
-      return { ok: false, message: 'המפתח קיים אבל חסרות לו הרשאות. ערוך אותו ב-ElevenLabs וסמן Speech to Text.' };
-    }
-    if (res.status === 401) return { ok: false, message: 'המפתח לא תקין. ודא שהעתקת את כולו (מתחיל ב-sk_ ואורכו כ-50 תווים).' };
-    return { ok: false, message: `שגיאה ${res.status}${status ? `: ${status}` : ''}` };
+    return { ok: false, message: `שגיאה ${res.status}` };
   } catch {
     return { ok: false, message: 'לא ניתן להתחבר ל-ElevenLabs. בדוק את החיבור לאינטרנט.' };
   }
