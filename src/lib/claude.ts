@@ -98,24 +98,28 @@ export async function summarizeMeeting(
     '--- סוף תמלול ---',
   ].join('\n');
 
-  const res = await fetch(API, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true',
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: 8000,
-      system: buildSystemPrompt(extraInstructions, lawyerName),
-      tools: [SUMMARY_TOOL],
-      tool_choice: { type: 'tool', name: SUMMARY_TOOL.name },
-      messages: [{ role: 'user', content: userContent }],
-    }),
-  });
+  const call = (forceTool: boolean) =>
+    fetch(API, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true',
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: 8000,
+        system: buildSystemPrompt(extraInstructions, lawyerName) + '\nחובה להחזיר את הסיכום אך ורק באמצעות קריאה לכלי save_meeting_summary.',
+        tools: [SUMMARY_TOOL],
+        tool_choice: forceTool ? { type: 'tool', name: SUMMARY_TOOL.name } : { type: 'auto' },
+        messages: [{ role: 'user', content: userContent }],
+      }),
+    });
 
+  // Some models reject a forced tool_choice. Start with "auto" (works everywhere),
+  // and only fall back to forcing if the model answered in plain text.
+  let res = await call(false);
   if (!res.ok) {
     let detail = '';
     try {
@@ -128,13 +132,39 @@ export async function summarizeMeeting(
     if (res.status === 400 && /credit|balance/i.test(detail)) throw new Error('נגמרה היתרה בחשבון Anthropic.');
     if (res.status === 404) throw new Error(`המודל ${model} לא זמין. בחר מודל אחר בהגדרות.`);
     if (res.status === 429) throw new Error('יותר מדי בקשות ל-Anthropic. נסה שוב בעוד רגע.');
+    if (res.status === 529 || res.status >= 500) throw new Error('השרתים של Anthropic עמוסים כרגע. נסה שוב בעוד דקה.');
     throw new Error(`שגיאת סיכום (${res.status}): ${detail || 'ללא פירוט'}`);
   }
 
-  const data = await res.json();
-  const toolUse = (data.content as Array<{ type: string; input?: unknown }>).find((c) => c.type === 'tool_use');
-  if (!toolUse?.input) throw new Error('Claude לא החזיר סיכום מובנה');
-  return normalizeSummary(toolUse.input as Partial<Summary>);
+  let data = await res.json();
+  let parsed = extractSummary(data);
+  if (!parsed) {
+    const retry = await call(true);
+    if (retry.ok) {
+      data = await retry.json();
+      parsed = extractSummary(data);
+    }
+  }
+  if (!parsed) throw new Error('Claude לא החזיר סיכום מובנה. נסה שוב או בחר מודל אחר בהגדרות.');
+  return normalizeSummary(parsed);
+}
+
+function extractSummary(data: { content?: Array<{ type: string; input?: unknown; text?: string }> }): Partial<Summary> | null {
+  const blocks = data?.content ?? [];
+  const toolUse = blocks.find((c) => c.type === 'tool_use' && c.input);
+  if (toolUse) return toolUse.input as Partial<Summary>;
+  // Fallback: model wrote JSON as text.
+  const text = blocks.filter((c) => c.type === 'text').map((c) => c.text || '').join('\n');
+  const m = text.match(/\{[\s\S]*\}/);
+  if (m) {
+    try {
+      const j = JSON.parse(m[0]);
+      if (j && typeof j === 'object' && ('overview' in j || 'tasks' in j)) return j as Partial<Summary>;
+    } catch {
+      /* ignore */
+    }
+  }
+  return null;
 }
 
 function normalizeSummary(raw: Partial<Summary>): Summary {

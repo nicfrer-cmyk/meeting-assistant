@@ -80,7 +80,7 @@ const summary = {
     }
     anCalls++;
     const body = req.postDataJSON();
-    if (!body.tools || body.tool_choice?.name !== 'save_meeting_summary') return route.fulfill({ status: 400, body: 'bad tool' });
+    if (!body.tools || body.tool_choice?.type !== 'auto') return route.fulfill({ status: 400, contentType: 'application/json', body: JSON.stringify({ error: { message: 'tool_choice: type "tool" and "any" are not supported for this model.' } }) });
     if (!body.messages[0].content.includes('דובר 1')) return route.fulfill({ status: 400, body: 'transcript missing speakers' });
     return route.fulfill({
       status: 200,
