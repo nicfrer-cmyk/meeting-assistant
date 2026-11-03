@@ -37,27 +37,30 @@ jobs:
 
       - name: Prepare signing key
         env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p android/keystore
-          if [ -n "$KEYSTORE_BASE64" ]; then
-            echo "$KEYSTORE_BASE64" | base64 -d > android/keystore/meetings.jks
-            echo "Using the stable signing key from secrets."
+          cd android/keystore
+          if gh release download signing-key -p meetings.jks -p password.txt --clobber 2>/dev/null; then
+            echo "Using the stable signing key stored in the 'signing-key' release."
           else
-            echo "::warning::KEYSTORE_BASE64 secret is missing. A temporary key is used; updates will require uninstalling first."
-            TMP_PW=$(openssl rand -hex 12)
-            keytool -genkeypair -keystore android/keystore/meetings.jks -storepass "$TMP_PW" -keypass "$TMP_PW" \
-              -alias meetings -keyalg RSA -keysize 2048 -validity 36500 -dname "CN=Meetings Temp, C=IL"
-            echo "KEYSTORE_PASSWORD=$TMP_PW" >> $GITHUB_ENV
-            echo "KEY_PASSWORD=$TMP_PW" >> $GITHUB_ENV
+            echo "No signing key yet. Generating one and storing it in a private release (keep it; it lets updates install over the old version)."
+            PW=$(openssl rand -hex 16)
+            echo -n "$PW" > password.txt
+            keytool -genkeypair -keystore meetings.jks -storepass "$PW" -keypass "$PW" \
+              -alias meetings -keyalg RSA -keysize 2048 -validity 36500 -dname "CN=Yarin Meetings, O=Yarin Ashwal Law, C=IL"
+            gh release create signing-key meetings.jks password.txt --prerelease \
+              --title "מפתח חתימה (לא למחוק)" --notes "נוצר אוטומטית. חובה לשמור כדי שעדכוני האפליקציה יתקינו מעל הגרסה הקודמת."
           fi
+          echo "KEYSTORE_PASSWORD=$(cat password.txt)" >> $GITHUB_ENV
+          echo "KEY_PASSWORD=$(cat password.txt)" >> $GITHUB_ENV
 
       - name: Build APK
         working-directory: android
         env:
           KEYSTORE_FILE: ${{ github.workspace }}/android/keystore/meetings.jks
-          KEYSTORE_PASSWORD: ${{ env.KEYSTORE_PASSWORD || secrets.KEYSTORE_PASSWORD }}
-          KEY_PASSWORD: ${{ env.KEY_PASSWORD || secrets.KEYSTORE_PASSWORD }}
+          KEYSTORE_PASSWORD: ${{ env.KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ env.KEY_PASSWORD }}
           KEY_ALIAS: meetings
         run: |
           chmod +x gradlew
