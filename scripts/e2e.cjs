@@ -153,7 +153,7 @@ const summary = {
   await page.getByRole('button', { name: 'פעולות נוספות' }).click();
   await page.getByRole('button', { name: 'תמלל מחדש מההקלטה' }).click();
   await page.waitForSelector('.chip.err', { timeout: 15000 });
-  await page.waitForSelector('text=מפתח ElevenLabs לא תקין');
+  await page.waitForSelector('text=מפתח ElevenLabs נדחה');
   await page.screenshot({ path: `${OUT}/10-error.png` });
 
   // Dark mode shot
