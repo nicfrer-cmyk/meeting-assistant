@@ -1,0 +1,86 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web app
+        run: npm run build
+
+      - name: Sync Capacitor
+        run: npx cap sync android
+
+      - name: Prepare signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          mkdir -p android/keystore
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > android/keystore/meetings.jks
+            echo "Using the stable signing key from secrets."
+          else
+            echo "::warning::KEYSTORE_BASE64 secret is missing. A temporary key is used; updates will require uninstalling first."
+            TMP_PW=$(openssl rand -hex 12)
+            keytool -genkeypair -keystore android/keystore/meetings.jks -storepass "$TMP_PW" -keypass "$TMP_PW" \
+              -alias meetings -keyalg RSA -keysize 2048 -validity 36500 -dname "CN=Meetings Temp, C=IL"
+            echo "KEYSTORE_PASSWORD=$TMP_PW" >> $GITHUB_ENV
+            echo "KEY_PASSWORD=$TMP_PW" >> $GITHUB_ENV
+          fi
+
+      - name: Build APK
+        working-directory: android
+        env:
+          KEYSTORE_FILE: ${{ github.workspace }}/android/keystore/meetings.jks
+          KEYSTORE_PASSWORD: ${{ env.KEYSTORE_PASSWORD || secrets.KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ env.KEY_PASSWORD || secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: meetings
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+
+      - name: Rename APK
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          cp android/app/build/outputs/apk/release/app-release.apk "meetings-v${VERSION}.apk"
+          echo "APK=meetings-v${VERSION}.apk" >> $GITHUB_ENV
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: meetings-apk
+          path: ${{ env.APK }}
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest "${APK}" \
+            --title "פגישות v${VERSION} (build ${GITHUB_RUN_NUMBER})" \
+            --notes "קובץ ההתקנה העדכני ביותר. הורד את ה-APK בטלפון והתקן." \
+            --latest
